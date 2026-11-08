@@ -1,10 +1,8 @@
 name: "CodeQL"
 
+# Seal fork: manual dispatch only (push/schedule triggers removed).
 on:
-  push:
-    branches: [ master ]
-  schedule:
-    - cron: '24 20 * * 3'
+  workflow_dispatch:
 
 permissions:
   contents: read

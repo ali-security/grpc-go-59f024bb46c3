@@ -295,7 +295,7 @@ func testNewConfigWithFileContentEnv(t *testing.T, fileName string, wantError bo
 	t.Helper()
 	b, err := bootstrapFileReadFunc(fileName)
 	if err != nil {
-		t.Skip(err)
+		t.Skipf("bootstrap-content variant not applicable: test case %q has no fixture content (%v); the file-name variant of this case covers it", fileName, err)
 	}
 	origBootstrapContent := envconfig.XDSBootstrapFileContent
 	envconfig.XDSBootstrapFileContent = string(b)

@@ -1,8 +1,8 @@
 name: Release
 
+# Seal fork: manual dispatch only (release trigger removed).
 on:
-  release:
-    types: [published]
+  workflow_dispatch:
 
 jobs:
   release:

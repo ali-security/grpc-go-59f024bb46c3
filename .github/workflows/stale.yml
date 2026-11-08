@@ -1,9 +1,8 @@
 name: Stale bot
 
+# Seal fork: manual dispatch only (schedule trigger removed).
 on:
   workflow_dispatch:
-  schedule:
-  - cron: "44 */2 * * *"
 
 jobs:
   stale:
