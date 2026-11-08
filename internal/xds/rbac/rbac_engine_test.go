@@ -289,6 +289,42 @@ func (s) TestNewChainEngine(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "RemoteIpMatcherUnsetPrefixLen",
+			policies: []*v3rbacpb.RBAC{
+				{
+					Action: v3rbacpb.RBAC_ALLOW,
+					Policies: map[string]*v3rbacpb.Policy{
+						"certain-source-ip": {
+							Permissions: []*v3rbacpb.Permission{
+								{Rule: &v3rbacpb.Permission_Any{Any: true}},
+							},
+							Principals: []*v3rbacpb.Principal{
+								{Identifier: &v3rbacpb.Principal_DirectRemoteIp{DirectRemoteIp: &v3corepb.CidrRange{AddressPrefix: "0.0.0.0"}}},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "DestinationIpMatcherUnsetPrefixLen",
+			policies: []*v3rbacpb.RBAC{
+				{
+					Action: v3rbacpb.RBAC_ALLOW,
+					Policies: map[string]*v3rbacpb.Policy{
+						"certain-destination-ip": {
+							Permissions: []*v3rbacpb.Permission{
+								{Rule: &v3rbacpb.Permission_DestinationIp{DestinationIp: &v3corepb.CidrRange{AddressPrefix: "0.0.0.0"}}},
+							},
+							Principals: []*v3rbacpb.Principal{
+								{Identifier: &v3rbacpb.Principal_Any{Any: true}},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
 			name: "MatcherToNotPolicy",
 			policies: []*v3rbacpb.RBAC{
 				{
@@ -424,6 +460,200 @@ func (s) TestNewChainEngine(t *testing.T) {
 				},
 			},
 		},
+		// gRPC does not support the destination_port_range permission rule.
+		{
+			name: "UnsupportedPermissionRule",
+			policies: []*v3rbacpb.RBAC{
+				{
+					Action: v3rbacpb.RBAC_ALLOW,
+					Policies: map[string]*v3rbacpb.Policy{
+						"anyone": {
+							Permissions: []*v3rbacpb.Permission{
+								{Rule: &v3rbacpb.Permission_DestinationPortRange{DestinationPortRange: &v3typepb.Int32Range{Start: 1, End: 1024}}},
+							},
+							Principals: []*v3rbacpb.Principal{
+								{Identifier: &v3rbacpb.Principal_Any{Any: true}},
+							},
+						},
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "Unsupported_field_in_NotRule",
+			policies: []*v3rbacpb.RBAC{
+				{
+					Action: v3rbacpb.RBAC_ALLOW,
+					Policies: map[string]*v3rbacpb.Policy{
+						"anyone": {
+							Permissions: []*v3rbacpb.Permission{
+								{
+									Rule: &v3rbacpb.Permission_NotRule{
+										NotRule: &v3rbacpb.Permission{
+											Rule: &v3rbacpb.Permission_DestinationPortRange{
+												DestinationPortRange: &v3typepb.Int32Range{Start: 1, End: 1024},
+											},
+										},
+									},
+								},
+							},
+							Principals: []*v3rbacpb.Principal{
+								{Identifier: &v3rbacpb.Principal_Any{Any: true}},
+							},
+						},
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "supported_and_unsupported_fields_in_NotRule",
+			policies: []*v3rbacpb.RBAC{
+				{
+					Action: v3rbacpb.RBAC_ALLOW,
+					Policies: map[string]*v3rbacpb.Policy{
+						"anyone": {
+							Permissions: []*v3rbacpb.Permission{
+								{
+									Rule: &v3rbacpb.Permission_NotRule{
+										NotRule: &v3rbacpb.Permission{
+											Rule: &v3rbacpb.Permission_AndRules{
+												AndRules: &v3rbacpb.Permission_Set{
+													Rules: []*v3rbacpb.Permission{
+														{
+															Rule: &v3rbacpb.Permission_UrlPath{
+																UrlPath: &v3matcherpb.PathMatcher{
+																	Rule: &v3matcherpb.PathMatcher_Path{
+																		Path: &v3matcherpb.StringMatcher{
+																			MatchPattern: &v3matcherpb.StringMatcher_Exact{Exact: "allowed"},
+																		},
+																	},
+																},
+															},
+														},
+														{
+															Rule: &v3rbacpb.Permission_DestinationPortRange{
+																DestinationPortRange: &v3typepb.Int32Range{Start: 1, End: 1024},
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+							Principals: []*v3rbacpb.Principal{
+								{Identifier: &v3rbacpb.Principal_Any{Any: true}},
+							},
+						},
+					},
+				},
+			},
+			wantErr: true,
+		},
+		// A principal identifier that is unknown to this version of the
+		// protos (e.g. filter_state or sourced_metadata sent by a newer
+		// management server) is decoded as an unset identifier.
+		{
+			name: "Unsupported_field_in_NotId",
+			policies: []*v3rbacpb.RBAC{
+				{
+					Action: v3rbacpb.RBAC_ALLOW,
+					Policies: map[string]*v3rbacpb.Policy{
+						"anyone": {
+							Permissions: []*v3rbacpb.Permission{
+								{Rule: &v3rbacpb.Permission_Any{Any: true}},
+							},
+							Principals: []*v3rbacpb.Principal{
+								{
+									Identifier: &v3rbacpb.Principal_NotId{
+										NotId: &v3rbacpb.Principal{},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "supported_and_unsupported_fields_in_NotId",
+			policies: []*v3rbacpb.RBAC{
+				{
+					Action: v3rbacpb.RBAC_ALLOW,
+					Policies: map[string]*v3rbacpb.Policy{
+						"anyone": {
+							Permissions: []*v3rbacpb.Permission{
+								{Rule: &v3rbacpb.Permission_Any{Any: true}},
+							},
+							Principals: []*v3rbacpb.Principal{
+								{
+									Identifier: &v3rbacpb.Principal_NotId{
+										NotId: &v3rbacpb.Principal{
+											Identifier: &v3rbacpb.Principal_AndIds{
+												AndIds: &v3rbacpb.Principal_Set{
+													Ids: []*v3rbacpb.Principal{
+														{
+															Identifier: &v3rbacpb.Principal_DirectRemoteIp{
+																DirectRemoteIp: &v3corepb.CidrRange{
+																	AddressPrefix: "0.0.0.0",
+																	PrefixLen:     &wrapperspb.UInt32Value{Value: uint32(10)},
+																},
+															},
+														},
+														{},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantErr: true,
+		},
+		{
+			name: "PermissionMetadata",
+			policies: []*v3rbacpb.RBAC{
+				{
+					Action: v3rbacpb.RBAC_ALLOW,
+					Policies: map[string]*v3rbacpb.Policy{
+						"metadata-permission": {
+							Permissions: []*v3rbacpb.Permission{
+								{Rule: &v3rbacpb.Permission_Metadata{Metadata: &v3matcherpb.MetadataMatcher{}}},
+							},
+							Principals: []*v3rbacpb.Principal{
+								{Identifier: &v3rbacpb.Principal_Any{Any: true}},
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			name: "PrincipalMetadata",
+			policies: []*v3rbacpb.RBAC{
+				{
+					Action: v3rbacpb.RBAC_ALLOW,
+					Policies: map[string]*v3rbacpb.Policy{
+						"metadata-principal": {
+							Permissions: []*v3rbacpb.Permission{
+								{Rule: &v3rbacpb.Permission_Any{Any: true}},
+							},
+							Principals: []*v3rbacpb.Principal{
+								{Identifier: &v3rbacpb.Principal_Metadata{Metadata: &v3matcherpb.MetadataMatcher{}}},
+							},
+						},
+					},
+				},
+			},
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -451,6 +681,295 @@ func (s) TestChainEngine(t *testing.T) {
 			wantStatusCode codes.Code
 		}
 	}{
+		{
+			name: "PermissionMetadata",
+			rbacConfigs: []*v3rbacpb.RBAC{
+				{
+					Policies: map[string]*v3rbacpb.Policy{
+						"metadata-permission": {
+							Permissions: []*v3rbacpb.Permission{
+								{Rule: &v3rbacpb.Permission_Metadata{Metadata: &v3matcherpb.MetadataMatcher{Invert: false}}},
+							},
+							Principals: []*v3rbacpb.Principal{
+								{Identifier: &v3rbacpb.Principal_Any{Any: true}},
+							},
+						},
+					},
+				},
+			},
+			rbacQueries: []struct {
+				rpcData        *rpcData
+				wantStatusCode codes.Code
+			}{
+				{
+					rpcData: &rpcData{
+						peerInfo: &peer.Peer{
+							Addr: &addr{ipAddress: "0.0.0.0"},
+						},
+					},
+					wantStatusCode: codes.PermissionDenied,
+				},
+			},
+		},
+		{
+			name: "PermissionMetadataInvert",
+			rbacConfigs: []*v3rbacpb.RBAC{
+				{
+					Policies: map[string]*v3rbacpb.Policy{
+						"metadata-permission-invert": {
+							Permissions: []*v3rbacpb.Permission{
+								{Rule: &v3rbacpb.Permission_Metadata{Metadata: &v3matcherpb.MetadataMatcher{Invert: true}}},
+							},
+							Principals: []*v3rbacpb.Principal{
+								{Identifier: &v3rbacpb.Principal_Any{Any: true}},
+							},
+						},
+					},
+				},
+			},
+			rbacQueries: []struct {
+				rpcData        *rpcData
+				wantStatusCode codes.Code
+			}{
+				{
+					rpcData: &rpcData{
+						peerInfo: &peer.Peer{
+							Addr: &addr{ipAddress: "0.0.0.0"},
+						},
+					},
+					wantStatusCode: codes.OK,
+				},
+			},
+		},
+		{
+			name: "PrincipalMetadata",
+			rbacConfigs: []*v3rbacpb.RBAC{
+				{
+					Policies: map[string]*v3rbacpb.Policy{
+						"metadata-principal": {
+							Permissions: []*v3rbacpb.Permission{
+								{Rule: &v3rbacpb.Permission_Any{Any: true}},
+							},
+							Principals: []*v3rbacpb.Principal{
+								{Identifier: &v3rbacpb.Principal_Metadata{Metadata: &v3matcherpb.MetadataMatcher{Invert: false}}},
+							},
+						},
+					},
+				},
+			},
+			rbacQueries: []struct {
+				rpcData        *rpcData
+				wantStatusCode codes.Code
+			}{
+				{
+					rpcData: &rpcData{
+						peerInfo: &peer.Peer{
+							Addr: &addr{ipAddress: "0.0.0.0"},
+						},
+					},
+					wantStatusCode: codes.PermissionDenied,
+				},
+			},
+		},
+		{
+			name: "PrincipalMetadataInvert",
+			rbacConfigs: []*v3rbacpb.RBAC{
+				{
+					Policies: map[string]*v3rbacpb.Policy{
+						"metadata-principal-invert": {
+							Permissions: []*v3rbacpb.Permission{
+								{Rule: &v3rbacpb.Permission_Any{Any: true}},
+							},
+							Principals: []*v3rbacpb.Principal{
+								{Identifier: &v3rbacpb.Principal_Metadata{Metadata: &v3matcherpb.MetadataMatcher{Invert: true}}},
+							},
+						},
+					},
+				},
+			},
+			rbacQueries: []struct {
+				rpcData        *rpcData
+				wantStatusCode codes.Code
+			}{
+				{
+					rpcData: &rpcData{
+						peerInfo: &peer.Peer{
+							Addr: &addr{ipAddress: "0.0.0.0"},
+						},
+					},
+					wantStatusCode: codes.OK,
+				},
+			},
+		},
+		{
+			name: "RequestedServerNameNotMatching",
+			rbacConfigs: []*v3rbacpb.RBAC{
+				{
+					Policies: map[string]*v3rbacpb.Policy{
+						"requested-server-name": {
+							Permissions: []*v3rbacpb.Permission{
+								{Rule: &v3rbacpb.Permission_RequestedServerName{RequestedServerName: &v3matcherpb.StringMatcher{MatchPattern: &v3matcherpb.StringMatcher_Exact{Exact: "foo"}}}},
+							},
+							Principals: []*v3rbacpb.Principal{
+								{Identifier: &v3rbacpb.Principal_Any{Any: true}},
+							},
+						},
+					},
+				},
+			},
+			rbacQueries: []struct {
+				rpcData        *rpcData
+				wantStatusCode codes.Code
+			}{
+				{
+					rpcData: &rpcData{
+						peerInfo: &peer.Peer{
+							Addr: &addr{ipAddress: "0.0.0.0"},
+						},
+					},
+					wantStatusCode: codes.PermissionDenied,
+				},
+			},
+		},
+		{
+			name: "RequestedServerNameMatching",
+			rbacConfigs: []*v3rbacpb.RBAC{
+				{
+					Policies: map[string]*v3rbacpb.Policy{
+						"requested-server-name": {
+							Permissions: []*v3rbacpb.Permission{
+								{Rule: &v3rbacpb.Permission_RequestedServerName{RequestedServerName: &v3matcherpb.StringMatcher{MatchPattern: &v3matcherpb.StringMatcher_Exact{Exact: ""}}}},
+							},
+							Principals: []*v3rbacpb.Principal{
+								{Identifier: &v3rbacpb.Principal_Any{Any: true}},
+							},
+						},
+					},
+				},
+			},
+			rbacQueries: []struct {
+				rpcData        *rpcData
+				wantStatusCode codes.Code
+			}{
+				{
+					rpcData: &rpcData{
+						peerInfo: &peer.Peer{
+							Addr: &addr{ipAddress: "0.0.0.0"},
+						},
+					},
+					wantStatusCode: codes.OK,
+				},
+			},
+		},
+		// PermissionMetadataInAndRules tests that a metadata permission, which
+		// is not supported and thus never matches, is not ignored inside an AND
+		// rule, which would make the allow policy match more RPCs than configured.
+		{
+			name: "PermissionMetadataInAndRules",
+			rbacConfigs: []*v3rbacpb.RBAC{
+				{
+					Policies: map[string]*v3rbacpb.Policy{
+						"metadata-and-path": {
+							Permissions: []*v3rbacpb.Permission{
+								{Rule: &v3rbacpb.Permission_AndRules{AndRules: &v3rbacpb.Permission_Set{Rules: []*v3rbacpb.Permission{
+									{Rule: &v3rbacpb.Permission_UrlPath{UrlPath: &v3matcherpb.PathMatcher{Rule: &v3matcherpb.PathMatcher_Path{Path: &v3matcherpb.StringMatcher{MatchPattern: &v3matcherpb.StringMatcher_Exact{Exact: "/allowed"}}}}}},
+									{Rule: &v3rbacpb.Permission_Metadata{Metadata: &v3matcherpb.MetadataMatcher{}}},
+								}}}},
+							},
+							Principals: []*v3rbacpb.Principal{
+								{Identifier: &v3rbacpb.Principal_Any{Any: true}},
+							},
+						},
+					},
+				},
+			},
+			rbacQueries: []struct {
+				rpcData        *rpcData
+				wantStatusCode codes.Code
+			}{
+				// The metadata matcher never matches, so neither does the AND rule.
+				{
+					rpcData: &rpcData{
+						fullMethod: "/allowed",
+						peerInfo: &peer.Peer{
+							Addr: &addr{ipAddress: "0.0.0.0"},
+						},
+					},
+					wantStatusCode: codes.PermissionDenied,
+				},
+			},
+		},
+		// PermissionMetadataInvertInDenyPolicy tests that an inverted metadata
+		// permission in a deny policy matches every RPC, instead of being ignored
+		// and letting every RPC through.
+		{
+			name: "PermissionMetadataInvertInDenyPolicy",
+			rbacConfigs: []*v3rbacpb.RBAC{
+				{
+					Action: v3rbacpb.RBAC_DENY,
+					Policies: map[string]*v3rbacpb.Policy{
+						"deny-metadata-invert": {
+							Permissions: []*v3rbacpb.Permission{
+								{Rule: &v3rbacpb.Permission_Metadata{Metadata: &v3matcherpb.MetadataMatcher{Invert: true}}},
+							},
+							Principals: []*v3rbacpb.Principal{
+								{Identifier: &v3rbacpb.Principal_Any{Any: true}},
+							},
+						},
+					},
+				},
+			},
+			rbacQueries: []struct {
+				rpcData        *rpcData
+				wantStatusCode codes.Code
+			}{
+				// The inverted metadata matcher always matches, so the RPC is denied.
+				{
+					rpcData: &rpcData{
+						peerInfo: &peer.Peer{
+							Addr: &addr{ipAddress: "0.0.0.0"},
+						},
+					},
+					wantStatusCode: codes.PermissionDenied,
+				},
+			},
+		},
+		// RequestedServerNameInAndRules tests that a requested server name
+		// permission is not ignored inside an AND rule.
+		{
+			name: "RequestedServerNameInAndRules",
+			rbacConfigs: []*v3rbacpb.RBAC{
+				{
+					Policies: map[string]*v3rbacpb.Policy{
+						"requested-server-name-and-any": {
+							Permissions: []*v3rbacpb.Permission{
+								{Rule: &v3rbacpb.Permission_AndRules{AndRules: &v3rbacpb.Permission_Set{Rules: []*v3rbacpb.Permission{
+									{Rule: &v3rbacpb.Permission_Any{Any: true}},
+									{Rule: &v3rbacpb.Permission_RequestedServerName{RequestedServerName: &v3matcherpb.StringMatcher{MatchPattern: &v3matcherpb.StringMatcher_Exact{Exact: "foo"}}}},
+								}}}},
+							},
+							Principals: []*v3rbacpb.Principal{
+								{Identifier: &v3rbacpb.Principal_Any{Any: true}},
+							},
+						},
+					},
+				},
+			},
+			rbacQueries: []struct {
+				rpcData        *rpcData
+				wantStatusCode codes.Code
+			}{
+				// The requested server name is "", which does not match "foo".
+				{
+					rpcData: &rpcData{
+						peerInfo: &peer.Peer{
+							Addr: &addr{ipAddress: "0.0.0.0"},
+						},
+					},
+					wantStatusCode: codes.PermissionDenied,
+				},
+			},
+		},
 		// SuccessCaseAnyMatch tests a single RBAC Engine instantiated with
 		// a config with a policy with any rules for both permissions and
 		// principals, meaning that any data about incoming RPC's that the RBAC
@@ -759,6 +1278,94 @@ func (s) TestChainEngine(t *testing.T) {
 					wantStatusCode: codes.OK,
 				},
 				// This incoming RPC Call shouldn't match with the certain-remote-ip policy.
+				{
+					rpcData: &rpcData{
+						peerInfo: &peer.Peer{
+							Addr: &addr{ipAddress: "10.0.0.0"},
+						},
+					},
+					wantStatusCode: codes.PermissionDenied,
+				},
+			},
+		},
+		// This test tests a RBAC policy configured with a source-ip policy.
+		// This should be logically equivalent to configuring a Engine with a
+		// direct-remote-ip or remote-ip policy, as per A41 - "allow equating
+		// RBAC's direct_remote_ip and remote_ip."
+		{
+			name: "SourceIpMatcher",
+			rbacConfigs: []*v3rbacpb.RBAC{
+				{
+					Policies: map[string]*v3rbacpb.Policy{
+						"certain-source-ip": {
+							Permissions: []*v3rbacpb.Permission{
+								{Rule: &v3rbacpb.Permission_Any{Any: true}},
+							},
+							Principals: []*v3rbacpb.Principal{
+								{Identifier: &v3rbacpb.Principal_SourceIp{SourceIp: &v3corepb.CidrRange{AddressPrefix: "0.0.0.0", PrefixLen: &wrapperspb.UInt32Value{Value: uint32(10)}}}},
+							},
+						},
+					},
+				},
+			},
+			rbacQueries: []struct {
+				rpcData        *rpcData
+				wantStatusCode codes.Code
+			}{
+				// This incoming RPC Call should match with the certain-source-ip policy.
+				{
+					rpcData: &rpcData{
+						peerInfo: &peer.Peer{
+							Addr: &addr{ipAddress: "0.0.0.0"},
+						},
+					},
+					wantStatusCode: codes.OK,
+				},
+				// This incoming RPC Call shouldn't match with the certain-source-ip policy.
+				{
+					rpcData: &rpcData{
+						peerInfo: &peer.Peer{
+							Addr: &addr{ipAddress: "10.0.0.0"},
+						},
+					},
+					wantStatusCode: codes.PermissionDenied,
+				},
+			},
+		},
+		// SourceIpMatcherInAndIds tests that a source-ip principal restricts
+		// the peers matched by an AND principal it is part of.
+		{
+			name: "SourceIpMatcherInAndIds",
+			rbacConfigs: []*v3rbacpb.RBAC{
+				{
+					Policies: map[string]*v3rbacpb.Policy{
+						"source-ip-and-any": {
+							Permissions: []*v3rbacpb.Permission{
+								{Rule: &v3rbacpb.Permission_Any{Any: true}},
+							},
+							Principals: []*v3rbacpb.Principal{
+								{Identifier: &v3rbacpb.Principal_AndIds{AndIds: &v3rbacpb.Principal_Set{Ids: []*v3rbacpb.Principal{
+									{Identifier: &v3rbacpb.Principal_SourceIp{SourceIp: &v3corepb.CidrRange{AddressPrefix: "0.0.0.0", PrefixLen: &wrapperspb.UInt32Value{Value: uint32(10)}}}},
+									{Identifier: &v3rbacpb.Principal_Any{Any: true}},
+								}}}},
+							},
+						},
+					},
+				},
+			},
+			rbacQueries: []struct {
+				rpcData        *rpcData
+				wantStatusCode codes.Code
+			}{
+				{
+					rpcData: &rpcData{
+						peerInfo: &peer.Peer{
+							Addr: &addr{ipAddress: "0.0.0.0"},
+						},
+					},
+					wantStatusCode: codes.OK,
+				},
+				// The source ip principal is not ignored inside the AND rule.
 				{
 					rpcData: &rpcData{
 						peerInfo: &peer.Peer{

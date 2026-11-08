@@ -75,7 +75,11 @@ func (b *bdpEstimator) timesnap(d [8]byte) {
 	if bdpPing.data != d {
 		return
 	}
+	// The peer can ack the BDP ping before it is written (its payload is
+	// fixed), so sentAt can be accessed concurrently by the reader.
+	b.mu.Lock()
 	b.sentAt = time.Now()
+	b.mu.Unlock()
 }
 
 // add adds bytes to the current sample for calculating bdp.
