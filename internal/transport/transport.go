@@ -31,9 +31,11 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unsafe"
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/internal/envconfig"
 	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/resolver"
@@ -42,7 +44,35 @@ import (
 	"google.golang.org/grpc/tap"
 )
 
-const logLevel = 2
+const (
+	logLevel = 2
+	// recvMsgSize estimates the memory overhead of a recvMsg in the backlog.
+	// It accounts for the recvMsg struct itself and the bytes.Buffer struct
+	// that holds the underlying buffer's data.
+	recvMsgSize = int(unsafe.Sizeof(recvMsg{}) + unsafe.Sizeof(bytes.Buffer{}))
+
+	// utilizationFactor controls when we consider memory utilization acceptable.
+	// When backlogHeapSize / payloadSize <= utilizationFactor (meaning at least
+	// 50% of the heap memory is actual payload data), compaction is skipped.
+	utilizationFactor = 2
+
+	// bufferPoolingThreshold is the minimum number of payload bytes that must
+	// accumulate in the uncompacted suffix of the backlog (when it consists
+	// of 1-byte payloads) before compaction copies the small payloads into a
+	// single buffer from the transport's buffer pool.
+	bufferPoolingThreshold = 1 << 10
+)
+
+var (
+	// compactionThreshold is approx 64KB (on 64-bit systems). It allows
+	// accumulating up to 1024 1-byte payloads before triggering compaction.
+	//
+	// Waiting for at least 1024 small payloads to accumulate ensures that
+	// compaction coalesces those small allocations into a single large buffer
+	// from the transport's buffer pool, enabling buffer reuse while avoiding
+	// frequent copying for small bursts of frames.
+	compactionThreshold = bufferPoolingThreshold * (recvMsgSize + 1)
+)
 
 type bufferPool struct {
 	pool sync.Pool
@@ -86,20 +116,32 @@ type recvBuffer struct {
 	c       chan recvMsg
 	mu      sync.Mutex
 	backlog []recvMsg
-	err     error
+	// uncompactedSuffixLen tracks the number of consecutive data messages at
+	// the tail of backlog that have not been compacted.
+	uncompactedSuffixLen int
+	// uncompactedBytes tracks the total payload bytes across the trailing
+	// uncompactedSuffixLen messages.
+	uncompactedBytes int
+	err              error
+	bufPool          *bufferPool
 }
 
-func newRecvBuffer() *recvBuffer {
+// newRecvBuffer creates a recvBuffer which uses the given pool to allocate the
+// buffers used when compacting its backlog, and to recycle the buffers that
+// were compacted. If pool is nil, compacted buffers are freshly allocated and
+// the buffers that were compacted are not recycled.
+func newRecvBuffer(pool *bufferPool) *recvBuffer {
 	b := &recvBuffer{
-		c: make(chan recvMsg, 1),
+		c:       make(chan recvMsg, 1),
+		bufPool: pool,
 	}
 	return b
 }
 
 func (b *recvBuffer) put(r recvMsg) {
 	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.err != nil {
-		b.mu.Unlock()
 		// An error had occurred earlier, don't accept more
 		// data or errors.
 		return
@@ -108,13 +150,78 @@ func (b *recvBuffer) put(r recvMsg) {
 	if len(b.backlog) == 0 {
 		select {
 		case b.c <- r:
-			b.mu.Unlock()
 			return
 		default:
 		}
 	}
 	b.backlog = append(b.backlog, r)
-	b.mu.Unlock()
+	b.compactBacklogLocked(r)
+}
+
+func (b *recvBuffer) compactBacklogLocked(r recvMsg) {
+	if !envconfig.EnableReceiveBufferCompaction {
+		return
+	}
+	if r.buffer == nil {
+		b.uncompactedBytes = 0
+		b.uncompactedSuffixLen = 0
+		return
+	}
+
+	b.uncompactedSuffixLen++
+	b.uncompactedBytes += r.buffer.Len()
+	backlogHeapSize := b.uncompactedSuffixLen*recvMsgSize + b.uncompactedBytes
+
+	// If the memory overhead is less than 50% of the heap usage (e.g., because
+	// a large DATA frame arrived), the average message size in the suffix is
+	// large enough that memory bloat is not a concern. Reset suffix tracking.
+	if backlogHeapSize <= utilizationFactor*b.uncompactedBytes {
+		b.uncompactedBytes = 0
+		b.uncompactedSuffixLen = 0
+		return
+	}
+	// Avoid compacting too frequently for short bursts of small frames.
+	// Wait until we have accumulated at least ~1024 small messages (~64 KB).
+	if backlogHeapSize <= compactionThreshold {
+		// Still can accumulate more payloads.
+		return
+	}
+
+	// Since the memory utilization is less than 50%, the average payload size
+	// of each recvMsg must be less than recvMsgSize (approx 64 bytes).
+	// In the worst case for bytes copied (where the average payload is just
+	// below recvMsgSize), compaction will occur once every:
+	//   compactionThreshold / (recvMsgSize + avg_payload) = ~520 messages,
+	// copying ~33KB of data.
+
+	var newBuf *bytes.Buffer
+	if b.bufPool != nil {
+		newBuf = b.bufPool.get()
+	} else {
+		newBuf = new(bytes.Buffer)
+	}
+	newBuf.Reset()
+	newBuf.Grow(b.uncompactedBytes)
+	startIdx := len(b.backlog) - b.uncompactedSuffixLen
+
+	for i := startIdx; i < len(b.backlog); i++ {
+		m := b.backlog[i]
+		b.backlog[i] = recvMsg{}
+		newBuf.Write(m.buffer.Bytes())
+		if b.bufPool != nil {
+			b.bufPool.put(m.buffer)
+		}
+	}
+	b.backlog[startIdx] = recvMsg{
+		buffer: newBuf,
+	}
+	b.backlog = b.backlog[:startIdx+1]
+	// After compaction, the suffix is replaced with a single message containing
+	// the combined payload. The new utilization is close to 1.0 (overhead of
+	// one recvMsg relative to the large compacted payload), which is well
+	// below the utilization factor of 2.
+	b.uncompactedBytes = 0
+	b.uncompactedSuffixLen = 0
 }
 
 func (b *recvBuffer) load() {
@@ -122,6 +229,13 @@ func (b *recvBuffer) load() {
 	if len(b.backlog) > 0 {
 		select {
 		case b.c <- b.backlog[0]:
+			// backlog[0] is only part of the tracked uncompacted suffix if the
+			// entire backlog currently consists of the suffix. If an earlier
+			// compaction or reset occurred, backlog[0] is already compacted.
+			if envconfig.EnableReceiveBufferCompaction && b.uncompactedSuffixLen == len(b.backlog) {
+				b.uncompactedSuffixLen--
+				b.uncompactedBytes -= b.backlog[0].buffer.Len()
+			}
 			b.backlog[0] = recvMsg{}
 			b.backlog = b.backlog[1:]
 		default:
